@@ -4,6 +4,12 @@ from typing import Optional, List, Dict, Any
 from app.models import RoleEnum
 
 # ── Employee schemas ──────────────────────────
+class RegisterRequest(BaseModel):
+    """Public registration — no role field. Admin assigns it later."""
+    name: str
+    email: EmailStr
+    password: str
+
 class EmployeeCreate(BaseModel):
     name: str
     email: EmailStr
@@ -23,6 +29,7 @@ class EmployeeResponse(BaseModel):
     email: str
     role: RoleEnum
     is_active: bool
+    is_pending: bool = False
     department_id: Optional[int] = None
     created_at: datetime
 
@@ -242,12 +249,14 @@ class AssignmentCreate(BaseModel):
     due_date: Optional[datetime] = None
     points: Optional[int] = 100
     assignment_type: Optional[str] = "exercise"
+    document_url: Optional[str] = None
 
 class AssignmentUpdate(BaseModel):
     title: Optional[str] = None
     description: Optional[str] = None
     due_date: Optional[datetime] = None
     points: Optional[int] = None
+    document_url: Optional[str] = None
     assignment_type: Optional[str] = None
 
 class AssignmentResponse(BaseModel):
@@ -258,6 +267,7 @@ class AssignmentResponse(BaseModel):
     due_date: Optional[datetime]
     points: int
     assignment_type: str
+    document_url: Optional[str]
     created_at: datetime
     course: Optional[CourseResponse] = None
 
@@ -333,6 +343,67 @@ class DoubtResponse(BaseModel):
     created_at: datetime
     asker: Optional[EmployeeResponse] = None
     answerer: Optional[EmployeeResponse] = None
+
+    class Config:
+        from_attributes = True
+
+# ── Live Class schemas ──────────────────────────────────────────────────────────
+class LiveClassCreate(BaseModel):
+    title: str
+    description: Optional[str] = None
+    instructor: Optional[str] = None
+    course_id: Optional[int] = None              # FK to courses (for course-wise audience)
+    date: Optional[str] = None                   # "2026-03-22"
+    time: Optional[str] = None                   # "10:00 AM"
+    duration: Optional[int] = 60
+    capacity: Optional[int] = 30
+    status: Optional[str] = "upcoming"           # upcoming, live, ended
+    meet_title: Optional[str] = None             # "Zoom", "Google Meet", "Teams"
+    meet_url: Optional[str] = None               # full meeting link
+    audience_type: Optional[str] = "all"         # all, course, selected
+    employee_ids: Optional[List[int]] = []        # used when audience_type="selected"
+
+class LiveClassUpdate(BaseModel):
+    title: Optional[str] = None
+    description: Optional[str] = None
+    instructor: Optional[str] = None
+    course_id: Optional[int] = None
+    date: Optional[str] = None
+    time: Optional[str] = None
+    duration: Optional[int] = None
+    capacity: Optional[int] = None
+    status: Optional[str] = None
+    meet_title: Optional[str] = None
+    meet_url: Optional[str] = None
+    audience_type: Optional[str] = None
+    employee_ids: Optional[List[int]] = None
+
+class LiveClassResponse(BaseModel):
+    id: int
+    title: str
+    description: Optional[str]
+    instructor: Optional[str]
+    course_id: Optional[int]
+    date: Optional[str]
+    time: Optional[str]
+    duration: int
+    capacity: int
+    enrolled: int
+    status: str
+    meet_title: Optional[str]
+    meet_url: Optional[str]
+    audience_type: str
+    created_at: datetime
+    created_by: Optional[int] = None
+
+    class Config:
+        from_attributes = True
+
+class LiveClassEnrollmentResponse(BaseModel):
+    id: int
+    live_class_id: int
+    employee_id: int
+    enrolled_at: datetime
 
     class Config:
         from_attributes = True

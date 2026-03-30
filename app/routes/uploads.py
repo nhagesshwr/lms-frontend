@@ -1,12 +1,39 @@
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 from app.database import get_db
-from app.models import Lesson
-from app.storage import upload_file, delete_file
-from app.dependencies import require_hr_admin
+from app.models import Lesson, Course, Assignment
+from app.storage import upload_file, delete_file, get_signed_url
 from app.dependencies import require_hr_admin, require_employee
 
 router = APIRouter(prefix="/lessons", tags=["Uploads"])
+
+ALLOWED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp", "image/gif"]
+MAX_IMAGE_SIZE = 5 * 1024 * 1024  # 5MB
+
+# Upload course thumbnail
+course_thumb_router = APIRouter(prefix="/courses", tags=["Courses"])
+
+@course_thumb_router.post("/{course_id}/upload-thumbnail")
+async def upload_thumbnail(
+    course_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current=Depends(require_hr_admin)
+):
+    course = db.query(Course).filter(Course.id == course_id).first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    if file.content_type not in ALLOWED_IMAGE_TYPES:
+        raise HTTPException(status_code=400, detail="Invalid file type. Allowed: jpg, png, webp, gif")
+    file_bytes = await file.read()
+    if len(file_bytes) > MAX_IMAGE_SIZE:
+        raise HTTPException(status_code=400, detail="Image too large. Max is 5MB")
+    thumbnail_url = upload_file(file_bytes, file.filename, file.content_type)
+    course.thumbnail_url = thumbnail_url
+    db.commit()
+    db.refresh(course)
+    return {"message": "Thumbnail uploaded successfully", "thumbnail_url": thumbnail_url}
+
 
 ALLOWED_VIDEO_TYPES = ["video/mp4", "video/avi", "video/quicktime", "video/x-matroska"]
 ALLOWED_PDF_TYPES = ["application/pdf"]
@@ -189,4 +216,33 @@ def get_lesson_files(
         "lesson_title": lesson.title,
         "video_url": get_signed_url(lesson.video_url) if lesson.video_url else None,
         "pdf_url": get_signed_url(lesson.pdf_url) if lesson.pdf_url else None
+    }
+
+@router.post("/assignments/{assignment_id}/document")
+async def upload_assignment_document(
+    assignment_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current=Depends(require_hr_admin)
+):
+    assignment = db.query(Assignment).filter(Assignment.id == assignment_id).first()
+    if not assignment:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+
+    file_bytes = await file.read()
+    if len(file_bytes) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Document too large. Max size is 20MB")
+
+    if assignment.document_url:
+        delete_file(assignment.document_url)
+
+    doc_url = upload_file(file_bytes, file.filename, file.content_type)
+    assignment.document_url = doc_url
+    db.commit()
+    db.refresh(assignment)
+
+    return {
+        "message": "Document uploaded successfully ✅",
+        "document_url": get_signed_url(doc_url),
+        "assignment_id": assignment_id
     }

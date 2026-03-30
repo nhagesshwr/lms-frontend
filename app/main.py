@@ -4,7 +4,8 @@ from fastapi.responses import FileResponse
 from app.database import Base, engine
 from app.routes import (
     auth as auth_router, courses, departments, employees, uploads,
-    enrollments, quizzes, assignments, certificates, messages, doubts
+    enrollments, quizzes, assignments, certificates, messages, doubts,
+    live_classes, activity, notifications, leaderboard
 )
 
 Base.metadata.create_all(bind=engine)
@@ -29,12 +30,17 @@ app.include_router(employees.router)
 app.include_router(departments.router)
 app.include_router(courses.router)
 app.include_router(uploads.router)
+app.include_router(uploads.course_thumb_router)
 app.include_router(enrollments.router)
 app.include_router(quizzes.router)
 app.include_router(assignments.router)
 app.include_router(certificates.router)
 app.include_router(messages.router)
 app.include_router(doubts.router)
+app.include_router(live_classes.router)
+app.include_router(activity.router)
+app.include_router(notifications.router)
+app.include_router(leaderboard.router)
 
 @app.get("/favicon.ico", include_in_schema=False)
 async def favicon():

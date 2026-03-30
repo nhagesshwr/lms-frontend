@@ -1,22 +1,46 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from pydantic import BaseModel
+from typing import Optional
 from app.database import get_db
 from app.models import Employee, PasswordResetToken
 from app.schemas import (
-    EmployeeCreate, LoginRequest, TokenResponse, EmployeeResponse,
+    EmployeeCreate, RegisterRequest, LoginRequest, TokenResponse, EmployeeResponse,
     ChangePasswordRequest, ForgotPasswordRequest, ResetPasswordRequest,
     UpdateProfileRequest
 )
 from app.auth import hash_password, verify_password, create_access_token
-from app.dependencies import get_current_employee
+from app.dependencies import get_current_employee, require_super_admin
 from datetime import datetime, timedelta
 import secrets
 import os
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
+# ─── Helper: notify all super admins of new registration ─────────────────────
+def _notify_admins_new_user(new_emp: "Employee", db: "Session"):
+    try:
+        from app.models import Message
+        admins = db.query(Employee).filter(
+            Employee.role.in_(["super_admin", "hr_admin"])
+        ).all()
+        content = (
+            f"👤 New Employee Registered\n\n"
+            f"Name: {new_emp.name}\n"
+            f"Email: {new_emp.email}\n\n"
+            f"They have been auto-assigned the Employee role and can already log in. "
+            f"You can change their role from the Employees panel if needed."
+        )
+        for admin in admins:
+            msg = Message(sender_id=new_emp.id, receiver_id=admin.id, content=content)
+            db.add(msg)
+        db.commit()
+    except Exception:
+        pass  # Non-critical
+
+# ─── Register (no role) ───────────────────────────────────────────────────────
 @router.post("/register", response_model=EmployeeResponse)
-def register(employee: EmployeeCreate, db: Session = Depends(get_db)):
+def register(employee: RegisterRequest, db: Session = Depends(get_db)):
     existing = db.query(Employee).filter(Employee.email == employee.email).first()
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
@@ -24,13 +48,105 @@ def register(employee: EmployeeCreate, db: Session = Depends(get_db)):
         name=employee.name,
         email=employee.email,
         hashed_password=hash_password(employee.password),
-        role=employee.role,
-        department_id=employee.department_id
+        role="employee",           # default; admin will change after review
+        is_pending=True,           # awaiting admin role assignment
     )
     db.add(new_employee)
     db.commit()
     db.refresh(new_employee)
+
+    # Notify all super_admin / hr_admin users
+    _notify_admins_new_user(new_employee, db)
+
     return new_employee
+
+# ─── Assign Role (super_admin only) ──────────────────────────────────────────
+class AssignRoleRequest(BaseModel):
+    role: str
+    department_id: Optional[int] = None
+
+@router.put("/assign-role/{employee_id}", response_model=EmployeeResponse)
+def assign_role(
+    employee_id: int,
+    data: AssignRoleRequest,
+    db: Session = Depends(get_db),
+    current: Employee = Depends(require_super_admin),
+):
+    """Super admin assigns a role to a pending user and sends them an email."""
+    from app.models import RoleEnum
+    emp = db.query(Employee).filter(Employee.id == employee_id).first()
+    if not emp:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Validate role
+    valid_roles = [r.value for r in RoleEnum]
+    if data.role not in valid_roles:
+        raise HTTPException(status_code=400, detail=f"Invalid role. Choices: {valid_roles}")
+
+    emp.role = data.role
+    emp.is_pending = False
+    if data.department_id is not None:
+        emp.department_id = data.department_id
+    db.commit()
+    db.refresh(emp)
+
+    # Try to send email notification
+    try:
+        _send_role_assigned_email(emp.email, emp.name, data.role)
+    except Exception:
+        pass  # Email is best-effort
+
+    return emp
+
+
+def _send_role_assigned_email(to_email: str, name: str, role: str):
+    """Send an email to the user notifying them of their assigned role."""
+    import smtplib
+    from email.mime.text import MIMEText
+    from email.mime.multipart import MIMEMultipart
+
+    smtp_host = os.getenv("SMTP_HOST")
+    smtp_port = int(os.getenv("SMTP_PORT", "587"))
+    smtp_user = os.getenv("SMTP_USER")
+    smtp_pass = os.getenv("SMTP_PASS")
+    from_email = os.getenv("FROM_EMAIL", smtp_user)
+    frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
+
+    if not all([smtp_host, smtp_user, smtp_pass]):
+        raise Exception("SMTP not configured")
+
+    role_labels = {
+        "employee": "Employee",
+        "manager": "Manager",
+        "hr_admin": "HR Admin",
+        "super_admin": "Super Admin",
+    }
+    role_label = role_labels.get(role, role.replace("_", " ").title())
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = "Your Bryte LMS Account is Ready!"
+    msg["From"] = f"Bryte LMS <{from_email}>"
+    msg["To"] = to_email
+
+    html = f"""
+    <html>
+      <body style="font-family: 'Segoe UI', sans-serif; background: #f8fafc; padding: 40px; color: #0f172a;">
+        <div style="max-width: 480px; margin: 0 auto; background: #fff; border-radius: 16px; padding: 40px; box-shadow: 0 4px 20px rgba(0,0,0,0.08);">
+          <h2 style="color: #6366f1; margin-bottom: 8px;">🎉 Welcome to Bryte LMS!</h2>
+          <p style="color: #64748b;">Hi {name},</p>
+          <p style="color: #64748b;">Your account has been reviewed and you have been assigned the role of <strong style="color: #6366f1;">{role_label}</strong>.</p>
+          <p style="color: #64748b;">You can now log in and access all features available to your role.</p>
+          <a href="{frontend_url}/login" style="display: inline-block; margin: 24px 0; padding: 14px 28px; background: #6366f1; color: #fff; border-radius: 10px; text-decoration: none; font-weight: 600;">Log In to Bryte</a>
+          <p style="color: #94a3b8; font-size: 13px;">If you did not register for Bryte LMS, please ignore this email.</p>
+        </div>
+      </body>
+    </html>
+    """
+    msg.attach(MIMEText(html, "html"))
+    with smtplib.SMTP(str(smtp_host), smtp_port) as server:
+        server.starttls()
+        server.login(str(smtp_user), str(smtp_pass))
+        server.sendmail(str(from_email), to_email, msg.as_string())
 
 @router.post("/login", response_model=TokenResponse)
 def login(request: LoginRequest, db: Session = Depends(get_db)):
@@ -39,6 +155,8 @@ def login(request: LoginRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=401, detail="Invalid email or password")
     if not employee.is_active:
         raise HTTPException(status_code=403, detail="Account is deactivated. Contact your administrator.")
+    if employee.is_pending:
+        raise HTTPException(status_code=403, detail="Your account is awaiting admin approval. You will receive an email once your role has been assigned.")
     token = create_access_token({"sub": employee.email, "role": employee.role, "id": employee.id})
     return {
         "access_token": token,

@@ -29,6 +29,7 @@ class Employee(Base):
     role = Column(Enum(RoleEnum), default=RoleEnum.employee)
     department_id = Column(Integer, ForeignKey("departments.id"), nullable=True)
     is_active = Column(Boolean, default=True)
+    is_pending = Column(Boolean, default=False)  # True = awaiting role assignment by admin
     created_at = Column(DateTime, default=datetime.utcnow)
 
     department = relationship("Department", back_populates="employees")
@@ -37,6 +38,7 @@ class Employee(Base):
     received_messages = relationship("Message", back_populates="receiver", foreign_keys="Message.receiver_id")
     certificates = relationship("Certificate", back_populates="employee")
     reset_tokens = relationship("PasswordResetToken", back_populates="employee")
+    live_class_enrollments = relationship("LiveClassEnrollment", back_populates="employee", foreign_keys="LiveClassEnrollment.employee_id")
 
 class Course(Base):
     __tablename__ = "courses"
@@ -151,6 +153,7 @@ class Assignment(Base):
     due_date = Column(DateTime, nullable=True)
     points = Column(Integer, default=100)
     assignment_type = Column(String, default="exercise")  # exercise, quiz, project, assessment, report
+    document_url = Column(String, nullable=True)
     created_by = Column(Integer, ForeignKey("employees.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -227,3 +230,50 @@ class Doubt(Base):
     lesson = relationship("Lesson", back_populates="doubts")
     asker = relationship("Employee", foreign_keys=[asked_by])
     answerer = relationship("Employee", foreign_keys=[answered_by])
+
+class LiveClass(Base):
+    __tablename__ = "live_classes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    title = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    instructor = Column(String, nullable=True)
+    course_id = Column(Integer, ForeignKey("courses.id"), nullable=True)   # course-wise targeting
+    date = Column(String, nullable=True)          # e.g. "2026-03-22"
+    time = Column(String, nullable=True)          # e.g. "10:00 AM"
+    duration = Column(Integer, default=60)
+    capacity = Column(Integer, default=30)
+    enrolled = Column(Integer, default=0)
+    status = Column(String, default="upcoming")   # upcoming, live, ended
+    meet_title = Column(String, nullable=True)    # "Zoom", "Google Meet", "Teams", etc.
+    meet_url = Column(String, nullable=True)      # full meeting link
+    audience_type = Column(String, default="all") # all, course, selected
+    created_by = Column(Integer, ForeignKey("employees.id"), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    course = relationship("Course", foreign_keys=[course_id])
+    creator = relationship("Employee", foreign_keys=[created_by])
+    enrollments = relationship("LiveClassEnrollment", back_populates="live_class", cascade="all, delete")
+    audience = relationship("LiveClassAudience", back_populates="live_class", cascade="all, delete")
+
+class LiveClassEnrollment(Base):
+    __tablename__ = "live_class_enrollments"
+
+    id = Column(Integer, primary_key=True, index=True)
+    live_class_id = Column(Integer, ForeignKey("live_classes.id"), nullable=False)
+    employee_id = Column(Integer, ForeignKey("employees.id"), nullable=False)
+    enrolled_at = Column(DateTime, default=datetime.utcnow)
+
+    live_class = relationship("LiveClass", back_populates="enrollments")
+    employee = relationship("Employee", foreign_keys=[employee_id])
+
+class LiveClassAudience(Base):
+    """Stores selected employees when audience_type='selected'"""
+    __tablename__ = "live_class_audience"
+
+    id = Column(Integer, primary_key=True, index=True)
+    live_class_id = Column(Integer, ForeignKey("live_classes.id"), nullable=False)
+    employee_id = Column(Integer, ForeignKey("employees.id"), nullable=False)
+
+    live_class = relationship("LiveClass", back_populates="audience")
+    employee = relationship("Employee", foreign_keys=[employee_id])

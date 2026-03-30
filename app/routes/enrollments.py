@@ -90,6 +90,25 @@ def unenroll(
     db.commit()
     return {"message": "Unenrolled successfully"}
 
+@router.delete("/admin/unenroll/{employee_id}/{course_id}")
+def admin_unenroll(
+    employee_id: int,
+    course_id: int,
+    db: Session = Depends(get_db),
+    current: Employee = Depends(require_hr_admin)
+):
+    """Super Admin or HR Admin removes a course for a particular user."""
+    enrollment = db.query(Enrollment).filter(
+        Enrollment.employee_id == employee_id,
+        Enrollment.course_id == course_id
+    ).first()
+    if not enrollment:
+        raise HTTPException(status_code=404, detail="User is not enrolled in this course")
+    
+    db.delete(enrollment)
+    db.commit()
+    return {"message": "User successfully removed from course"}
+
 
 @router.get("/my", response_model=list[EnrollmentResponse])
 def get_my_enrollments(
@@ -122,6 +141,37 @@ def get_enrolled_employees(
             "enrolled_at": e.enrolled_at,
             "progress_pct": e.progress_pct,
             "completed": e.completed
+        }
+        for e in enrollments
+    ]
+
+
+@router.get("/employee/{employee_id}")
+def get_employee_enrollments(
+    employee_id: int,
+    db: Session = Depends(get_db),
+    current: Employee = Depends(require_hr_admin)
+):
+    """Get all courses enrolled for a specific employee (admin/manager view)."""
+    employee = db.query(Employee).filter(Employee.id == employee_id).first()
+    if not employee:
+        raise HTTPException(status_code=404, detail="Employee not found")
+
+    enrollments = db.query(Enrollment).options(
+        joinedload(Enrollment.course)
+    ).filter(Enrollment.employee_id == employee_id).all()
+
+    return [
+        {
+            "enrollment_id": e.id,
+            "course_id": e.course_id,
+            "course_title": e.course.title if e.course else "—",
+            "course_thumbnail": e.course.thumbnail_url if e.course else None,
+            "course_category": e.course.category if e.course else None,
+            "enrolled_at": e.enrolled_at,
+            "progress_pct": e.progress_pct or 0,
+            "completed": e.completed or False,
+            "completed_at": e.completed_at,
         }
         for e in enrollments
     ]
@@ -160,40 +210,41 @@ def mark_lesson_complete(
         )
         db.add(prog)
 
-    # Recalculate progress %
-    total_lessons = db.query(Lesson).filter(Lesson.course_id == course_id).count()
-    completed_lessons = db.query(LessonProgress).filter(
-        LessonProgress.enrollment_id == enrollment.id,
-        LessonProgress.completed == True
-    ).count()
+    # Recalculate progress % strictly against lessons belonging to this course
+    course_lessons = db.query(Lesson).filter(Lesson.course_id == course_id).all()
+    lesson_ids = [l.id for l in course_lessons]
+    total_lessons = len(lesson_ids)
 
+    completed_lessons_count = 0
     if total_lessons > 0:
-        enrollment.progress_pct = round((completed_lessons / total_lessons) * 100, 1)
+        completed_lessons_count = db.query(LessonProgress).filter(
+            LessonProgress.enrollment_id == enrollment.id,
+            LessonProgress.lesson_id.in_(lesson_ids),
+            LessonProgress.completed == True
+        ).count()
+        
+        enrollment.progress_pct = round((completed_lessons_count / total_lessons) * 100, 1)
 
-    # If 100% done, mark enrollment as complete and issue certificate
-    certificate = None
-    if enrollment.progress_pct >= 100 and not enrollment.completed:
-        enrollment.completed = True
-        enrollment.completed_at = datetime.utcnow()
-        # Issue certificate
-        existing_cert = db.query(Certificate).filter(
-            Certificate.employee_id == current.id,
-            Certificate.course_id == course_id
-        ).first()
-        if not existing_cert:
-            cert = Certificate(
-                employee_id=current.id,
-                course_id=course_id,
-                credential_id=f"LMS-{datetime.utcnow().year}-{uuid.uuid4().hex[:8].upper()}"
-            )
-            db.add(cert)
-            certificate = cert
+    # Force completion status if progress is 100
+    if enrollment.progress_pct >= 100:
+        if not enrollment.completed:
+            enrollment.completed = True
+            enrollment.completed_at = datetime.utcnow()
+    else:
+        enrollment.completed = False
 
     db.commit()
+    db.refresh(enrollment)
     return {
         "progress_pct": enrollment.progress_pct,
         "completed": enrollment.completed,
-        "certificate_issued": certificate is not None
+        "total": total_lessons,
+        "completed_count": completed_lessons_count
+    }
+    return {
+        "progress_pct": enrollment.progress_pct,
+        "completed": enrollment.completed,
+        "certificate_issued": False
     }
 
 
@@ -208,8 +259,45 @@ def check_enrollment(
         Enrollment.employee_id == current.id,
         Enrollment.course_id == course_id
     ).first()
+    
+    progress_records = []
+    has_cert = False
+    progress_pct = 0.0
+    is_completed = False
+
+    if enrollment:
+        # Robust progress calculation
+        course_lessons = db.query(Lesson).filter(Lesson.course_id == course_id).all()
+        lesson_ids = [l.id for l in course_lessons]
+        total_lessons = len(lesson_ids)
+        
+        progress_records = db.query(LessonProgress).filter(
+            LessonProgress.enrollment_id == enrollment.id,
+            LessonProgress.lesson_id.in_(lesson_ids)
+        ).all()
+        
+        completed_count = sum(1 for p in progress_records if p.completed)
+        
+        if total_lessons > 0:
+            progress_pct = round((completed_count / total_lessons) * 100, 1)
+        
+        # Sync enrollment state if needed
+        if progress_pct >= 100 and not enrollment.completed:
+            enrollment.progress_pct = progress_pct
+            enrollment.completed = True
+            enrollment.completed_at = datetime.utcnow()
+            db.commit()
+        elif enrollment.progress_pct != progress_pct:
+            enrollment.progress_pct = progress_pct
+            db.commit()
+
+        is_completed = enrollment.completed
+        has_cert = db.query(Certificate).filter(Certificate.employee_id == current.id, Certificate.course_id == course_id).first() is not None
+
     return {
         "enrolled": enrollment is not None,
-        "progress_pct": enrollment.progress_pct if enrollment else 0,
-        "completed": enrollment.completed if enrollment else False
+        "progress_pct": progress_pct,
+        "completed": is_completed,
+        "progress": [{"lesson_id": p.lesson_id, "completed": p.completed} for p in progress_records],
+        "has_certificate": has_cert
     }

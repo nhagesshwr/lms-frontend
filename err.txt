@@ -1,0 +1,11 @@
+Traceback (most recent call last):
+  File "<string>", line 1, in <module>
+    import sys; sys.stderr = open('err.txt', 'w', encoding='utf-8'); import app.main
+                                                                     ^^^^^^^^^^^^^^^
+  File "C:\Users\AT0214\Downloads\lms\Lms_backend-main\app\main.py", line 5, in <module>
+    from app.routes import (
+    ...<2 lines>...
+    )
+  File "C:\Users\AT0214\Downloads\lms\Lms_backend-main\app\routes\live_classes.py", line 7, in <module>
+    from app.dependencies import get_current_user
+ImportError: cannot import name 'get_current_user' from 'app.dependencies' (C:\Users\AT0214\Downloads\lms\Lms_backend-main\app\dependencies.py)

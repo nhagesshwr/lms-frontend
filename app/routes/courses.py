@@ -47,6 +47,14 @@ def get_all_courses(
 ):
     return db.query(Course).all()
 
+# HR admin views all courses with their lessons included
+@router.get("/all/with_lessons", response_model=list[CourseWithLessons])
+def get_all_courses_with_lessons(
+    db: Session = Depends(get_db),
+    current=Depends(require_hr_admin)
+):
+    return db.query(Course).all()
+
 # Get single course with lessons
 @router.get("/{course_id}", response_model=CourseWithLessons)
 def get_course(

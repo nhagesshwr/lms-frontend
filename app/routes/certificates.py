@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, joinedload
 from app.database import get_db
-from app.models import Certificate, Employee, Course
+from app.models import Certificate, Employee, Course, Enrollment
 from app.schemas import CertificateResponse
 from app.dependencies import require_employee, require_hr_admin
 import uuid
@@ -63,6 +63,63 @@ def issue_certificate(
         employee_id=employee_id,
         course_id=course_id,
         credential_id=f"LMS-{datetime.utcnow().year}-{uuid.uuid4().hex[:8].upper()}"
+    )
+    db.add(cert)
+    db.commit()
+    db.refresh(cert)
+    return cert
+
+    return cert
+
+
+@router.post("/generate/{course_id}", response_model=CertificateResponse)
+def generate_my_certificate(
+    course_id: int,
+    db: Session = Depends(get_db),
+    current: Employee = Depends(require_employee)
+):
+    """Employee generates their own certificate if course is completed."""
+    enrollment = db.query(Enrollment).filter(
+        Enrollment.employee_id == current.id,
+        Enrollment.course_id == course_id
+    ).first()
+
+    if not enrollment:
+        raise HTTPException(status_code=400, detail="Not enrolled in this course")
+
+    # Double check actual completion if status is lagging
+    if not enrollment.completed:
+        from app.models import Lesson, LessonProgress
+        lessons = db.query(Lesson).filter(Lesson.course_id == course_id).all()
+        lids = [l.id for l in lessons]
+        if not lids:
+             raise HTTPException(status_code=400, detail="Course has no lessons")
+        comp_count = db.query(LessonProgress).filter(
+            LessonProgress.enrollment_id == enrollment.id,
+            LessonProgress.lesson_id.in_(lids),
+            LessonProgress.completed == True
+        ).count()
+        
+        if comp_count < len(lids):
+            raise HTTPException(status_code=400, detail=f"Course not completed ({comp_count}/{len(lids)} lessons done)")
+        
+        # If we reach here, it IS completed but status was lagging
+        enrollment.completed = True
+        enrollment.progress_pct = 100.0
+        db.commit()
+
+
+    existing = db.query(Certificate).filter(
+        Certificate.employee_id == current.id,
+        Certificate.course_id == course_id
+    ).first()
+    if existing:
+        return existing
+
+    cert = Certificate(
+        employee_id=current.id,
+        course_id=course_id,
+        credential_id=f"CERT-{uuid.uuid4().hex[:8].upper()}"
     )
     db.add(cert)
     db.commit()
